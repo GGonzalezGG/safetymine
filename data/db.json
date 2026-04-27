@@ -4,14 +4,14 @@
       "id": "MINA_01",
       "nombre_mina": "Mina Norte - Extracción de Cobre",
       "riesgos_activos": ["Alta concentración de polvo", "Gases de tronadura"],
-      "epp_obligatorio": ["Casco", "Respirador", "Lentes"],
+      "epp_obligatorio": ["Casco", "Mascarilla"],
       "path_protocolo": "protocols/norte_gases.md"
     },
     {
       "id": "MINA_02",
       "nombre_mina": "Mina Sur - Subterránea",
       "riesgos_activos": ["Derrumbes", "Baja visibilidad"],
-      "epp_obligatorio": ["Casco", "ChalecoReflectante", "Guantes"],
+      "epp_obligatorio": ["Casco", "ChalecoSeguridad"],
       "path_protocolo": "protocols/sur_seguridad.md"
     }
   ]

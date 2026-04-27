@@ -32,8 +32,12 @@ impl SafetyEvaluator {
     /// Compara los items detectados por la visión con los obligatorios de la mina
     pub fn verificar_faltantes(&self, deteccion: &DetectionResult) -> Vec<EppItem> {
         if let Some(ref ctx) = self.contexto_actual {
+            let labels_detectados: Vec<EppItem> = deteccion.detecciones.iter()
+                .map(|d| d.label.clone())
+                .collect();
+
             ctx.epp_obligatorio.iter()
-                .filter(|item| !deteccion.items_detectados.contains(item))
+                .filter(|item| !labels_detectados.contains(item))
                 .cloned()
                 .collect()
         } else {

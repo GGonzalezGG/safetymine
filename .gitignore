@@ -1,3 +1,23 @@
+# Rust
 /target
-.env
+Cargo.lock
+
+# Modelos y Datos pesados (Evitar subir archivos grandes a Git)
+*.onnx
 *.gguf
+/data/
+/models/
+
+# Archivos temporales de inspección y scratch
+scratch_*.rs
+crates/vision/examples/inspect.rs
+
+# Entorno y Configuración
+.env
+.env.*
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

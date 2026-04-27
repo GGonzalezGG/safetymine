@@ -1,6 +1,9 @@
 [package]
-name = "tui-app"
+name = "safety-gui"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+vision = { path = "../vision" }
+eframe = { version = "0.27", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+anyhow = "1.0"
