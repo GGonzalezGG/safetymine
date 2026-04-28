@@ -20,7 +20,7 @@ impl VisionEngine {
     pub fn process_frame(&self, frame: &Mat) -> Result<Vec<BoundingBox>> {
         // Convertir Mat (BGR) a DynamicImage (RGB) para YOLO
         let mut rgb_mat = Mat::default();
-        imgproc::cvt_color(frame, &mut rgb_mat, imgproc::COLOR_BGR2RGB, 0)?;
+        imgproc::cvt_color_def(frame, &mut rgb_mat, imgproc::COLOR_BGR2RGB)?;
         
         let size = rgb_mat.size()?;
         let data = rgb_mat.data_bytes()?;
@@ -48,16 +48,23 @@ impl SafetyGuiApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, model_path: &str, media_path: &str) -> Self {
         let engine = Arc::new(VisionEngine::new(model_path).expect("Failed to load model"));
         
-        // Si termina en mp4/avi, intentamos abrir como video. Si no, asumimos imagen (como webp)
-        let is_video = media_path.ends_with(".mp4") || media_path.ends_with(".avi");
+        // Detectamos si es la cámara (índice 0) o un archivo de video
+        let is_camera = media_path == "0";
+        let is_video = is_camera || media_path.ends_with(".mp4") || media_path.ends_with(".avi");
         
         let mut video_capture = None;
         let mut current_frame = None;
         let mut last_detections = Vec::new();
         let mut static_image_processed = false;
-
+        
         if is_video {
-            video_capture = Some(videoio::VideoCapture::from_file(media_path, videoio::CAP_ANY).expect("Failed to open video"));
+            if is_camera {
+                // Abrir la cámara web de hardware (pasando 0 como i32)
+                video_capture = Some(videoio::VideoCapture::new(0, videoio::CAP_ANY).expect("Failed to open webcam"));
+            } else {
+                // Abrir archivo de video local
+                video_capture = Some(videoio::VideoCapture::from_file(media_path, videoio::CAP_ANY).expect("Failed to open video file"));
+            }
         } else {
             // Es una imagen (ej: .webp, .jpg, .png)
             if let Ok(dyn_img) = image::open(media_path) {
@@ -97,7 +104,7 @@ impl eframe::App for SafetyGuiApp {
                 
                 // Convertir para visualización
                 let mut rgb_mat = Mat::default();
-                let _ = imgproc::cvt_color(&mat, &mut rgb_mat, imgproc::COLOR_BGR2RGB, 0);
+                let _ = imgproc::cvt_color_def(&mat, &mut rgb_mat, imgproc::COLOR_BGR2RGB);
                 if let Ok(size) = rgb_mat.size() {
                     if let Ok(bytes) = rgb_mat.data_bytes() {
                         self.current_frame = Some(egui::ColorImage::from_rgb(

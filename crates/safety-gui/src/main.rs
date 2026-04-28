@@ -10,22 +10,19 @@ fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
 
-    // RUTAS A ARCHIVOS:
     let model_path = "best.onnx"; 
     
-    // NOTA: Puedes usar un video (.mp4) o una imagen estática (.webp, .jpg, .png).
-    // Solo cambia esta ruta por la de tu archivo.
-    let media_path = "data/fototest.webp"; 
+    // Usamos "0" como bandera para indicar que queremos la webcam por defecto
+    let media_path = "0"; 
 
     println!("Iniciando SafetyMine Checkpoint...");
     println!("Cargando modelo YOLOv8 desde: {}", model_path);
-    println!("Cargando archivo multimedia desde: {}", media_path);
+    println!("Inicializando fuente de video: {}", media_path);
 
     eframe::run_native(
         "SafetyMine Checkpoint",
         options,
         Box::new(move |cc| {
-            // Inicializar el motor de visión (este llamará internamente a ort y opencv)
             Box::new(vision::SafetyGuiApp::new(cc, model_path, media_path))
         }),
     )
