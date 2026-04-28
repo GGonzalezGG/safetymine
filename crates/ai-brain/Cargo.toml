@@ -5,6 +5,6 @@ edition = "2024"
 
 [dependencies]
 common = { path = "../common" }
-safety-engine = { path = "../safety-engine" }
+
 serde_json = "1.0"
 llama-cpp-2 = { version = "0.1.145", features = ["sampler"] }
