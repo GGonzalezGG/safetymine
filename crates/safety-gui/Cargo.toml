@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+common = { path = "../common" }
 vision = { path = "../vision" }
-eframe = { version = "0.27", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
-anyhow = "1.0"
+ai-brain = { path = "../ai-brain" }
+safety-engine = { path = "../safety-engine" }
+
+slint = "1.16.1"
+rfd = "0.17.2"
+
+[build-dependencies]
+slint-build = "1.16.1"

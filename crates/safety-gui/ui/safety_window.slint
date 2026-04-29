@@ -1,0 +1,151 @@
+import { Button, ComboBox, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component SafetyWindow inherits Window {
+    title: "SafetyMine Checkpoint";
+    width: 900px;
+    height: 650px;
+    background: #1e1e1e; // Dark Mode industrial
+
+    // Propiedades expuestas para que Rust las lea y modifique
+    in-out property <string> estado_general: "SISTEMA INICIADO";
+    in-out property <color> color_estado: #4CAF50;
+    in-out property <string> fuente_actual: "Cámara Web (0)";
+    in-out property <[string]> lista_epp: ["Casco", "Lentes", "Guantes"]; 
+    in-out property <[string]> riesgos_mina: ["Polvo en suspensión", "Gases Tóxicos"];
+    in-out property <[string]> historial_tutor: ["Esperando validación de usuario..."];
+
+    // Eventos (Callbacks) para que Rust reaccione a los clics
+    callback cambiar_fuente();
+    callback validar_manual();
+    callback mina_seleccionada(string);
+
+    HorizontalBox {
+        padding: 20px;
+        spacing: 20px;
+
+        // --- COLUMNA IZQUIERDA: Visor Crítico ---
+        VerticalBox {
+            width: parent.width * 0.65;
+            spacing: 15px;
+
+            // Header de Estado
+            Text {
+                text: "ESTADO: " + root.estado_general;
+                color: root.color_estado;
+                font-size: 28px;
+                font-weight: 800;
+                letter-spacing: 2px;
+            }
+
+            // Visor de Video (Por ahora un recuadro negro)
+            Rectangle {
+                background: #000000;
+                border-color: #333333;
+                border-width: 2px;
+                border-radius: 8px;
+                
+                Text {
+                    text: "[ VISOR DE CÁMARA DESACTIVADO ]\nFuente: " + root.fuente_actual;
+                    color: #555555;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Barra de Controles PoC
+            HorizontalBox {
+                spacing: 10px;
+                alignment: space-between;
+
+                ComboBox {
+                    width: 200px;
+                    model: ["Mina Norte", "Mina Sur", "Planta Procesamiento"];
+                    current-value: "Mina Norte";
+                    selected(val) => { root.mina_seleccionada(val); }
+                }
+
+                HorizontalBox {
+                    spacing: 10px;
+                    Button {
+                        text: "Cambiar Fuente 📁";
+                        clicked => { root.cambiar_fuente(); }
+                    }
+                    Button {
+                        text: "Validar Manualmente ⚡";
+                        primary: true;
+                        clicked => { root.validar_manual(); }
+                    }
+                }
+            }
+        }
+
+        // --- COLUMNA DERECHA: Análisis y Tutor ---
+        VerticalBox {
+            spacing: 20px;
+
+            // Panel de Riesgos
+            Rectangle {
+                background: #2a2a2a;
+                border-radius: 8px;
+                padding: 15px;
+                VerticalBox {
+                    spacing: 8px;
+                    Text { text: "RIESGOS ACTIVOS"; color: #ffffff; font-weight: 700; font-size: 16px; }
+                    for riesgo in root.riesgos_mina: Text {
+                        text: "⚠️ " + riesgo;
+                        color: #ff9800;
+                        font-size: 14px;
+                    }
+                }
+            }
+
+            // Checklist de EPP
+            Rectangle {
+                background: #2a2a2a;
+                border-radius: 8px;
+                padding: 15px;
+                VerticalBox {
+                    spacing: 8px;
+                    Text { text: "CHECKLIST EPP"; color: #ffffff; font-weight: 700; font-size: 16px; }
+                    for item in root.lista_epp: Text {
+                        text: "✅ " + item;
+                        color: #4CAF50;
+                        font-size: 14px;
+                    }
+                }
+            }
+
+            // Consola del Tutor (Historial)
+            Rectangle {
+                background: #121212;
+                border-color: #444444;
+                border-width: 1px;
+                border-radius: 8px;
+                padding: 15px;
+                VerticalBox {
+                    spacing: 10px;
+                    Text { text: "SAFETY BUDDY (TUTOR)"; color: #00bcd4; font-weight: 800; font-size: 16px; }
+                    
+                    ScrollView {
+                        VerticalBox {
+                            spacing: 10px;
+                            // Iteramos sobre el historial
+                            for msg in root.historial_tutor: Rectangle {
+                                background: #222222;
+                                border-radius: 6px;
+                                padding: 10px;
+                                Text {
+                                    text: msg;
+                                    color: #eeeeee;
+                                    wrap: word-wrap;
+                                    font-size: 14px;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
