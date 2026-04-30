@@ -4574,8 +4574,11 @@ version = "0.1.0"
 dependencies = [
  "ai-brain",
  "common",
+ "image",
  "rfd",
  "safety-engine",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
  "vision",
