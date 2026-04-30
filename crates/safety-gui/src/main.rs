@@ -58,9 +58,6 @@ fn main() -> Result<(), slint::PlatformError> {
     // "ultimo_frame" será lo que procese YOLO, sin importar si vino de cámara o archivo
     let ultimo_frame = Arc::new(Mutex::new(None::<DynamicImage>));
     
-    // "ultimo_frame" será lo que procese YOLO, sin importar si vino de cámara o archivo
-    let ultimo_frame = Arc::new(Mutex::new(None::<DynamicImage>));
-    
     // NUEVA VARIABLE: Controla el Switch entre cámara y archivo
     let modo_fuente = Arc::new(Mutex::new(String::new())); // Vacío = Cámara
 
