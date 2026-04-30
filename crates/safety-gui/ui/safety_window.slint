@@ -19,6 +19,7 @@ export component SafetyWindow inherits Window {
     callback cambiar_fuente();
     callback validar_manual();
     callback mina_seleccionada(string);
+    callback usar_camara();
 
     HorizontalBox {
         padding: 24px;
@@ -92,7 +93,11 @@ export component SafetyWindow inherits Window {
                     HorizontalBox {
                         spacing: 12px;
                         Button {
-                            text: "Cambiar Fuente 📁";
+                            text: "Cámara 📷";
+                            clicked => { root.usar_camara(); }
+                        }
+                        Button {
+                            text: "Archivo 📁";
                             clicked => { root.cambiar_fuente(); }
                         }
                         Button {
