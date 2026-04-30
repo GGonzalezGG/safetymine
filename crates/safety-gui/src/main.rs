@@ -2,29 +2,28 @@ use slint::{Model, VecModel, SharedString, Image, Rgba8Pixel, SharedPixelBuffer}
 use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant}; // <--- Agregamos Instant
 use image::DynamicImage;
+use image::Rgba; // <--- Para el color de las cajas
+
+// Importaciones de dibujo
+use imageproc::drawing::draw_hollow_rect_mut;
+use imageproc::rect::Rect;
 
 use vision::{VisionEngine, CameraStream};
 use safety_engine::SafetyEvaluator;
-use common::MinaContext;
 
 slint::include_modules!();
 
 fn main() -> Result<(), slint::PlatformError> {
     println!("Iniciando SafetyMine GUI...");
     
-    // 1. Cargar la DB inicial
     let db_path = "data/db.json"; 
     let db_content = std::fs::read_to_string(db_path).expect("No se pudo cargar db.json");
     let db: serde_json::Value = serde_json::from_str(&db_content).expect("Error en JSON");
     
-    let nombres: Vec<SharedString> = db["minas"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m["nombre_mina"].as_str().unwrap().into())
-        .collect();
+    let nombres: Vec<SharedString> = db["minas"].as_array().unwrap().iter()
+        .map(|m| m["nombre_mina"].as_str().unwrap().into()).collect();
 
     let primer_id = nombres[0].to_string();
     let evaluator = Arc::new(Mutex::new(SafetyEvaluator::new(db_path, &primer_id)));
@@ -32,7 +31,6 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui = SafetyWindow::new()?;
     ui.set_lista_minas(Rc::new(VecModel::from(nombres)).into());
 
-    // --- LÓGICA: Selección de Mina ---
     let ui_handle_mina = ui.as_weak();
     let evaluator_mina = evaluator.clone();
     
@@ -51,30 +49,20 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // 2. Inicializamos YOLO y Estado Compartido
     println!("[Sistema] Cargando modelo ONNX...");
     let engine = Arc::new(VisionEngine::new("best.onnx").expect("Fallo al cargar YOLO"));
     
-    // "ultimo_frame" será lo que procese YOLO, sin importar si vino de cámara o archivo
     let ultimo_frame = Arc::new(Mutex::new(None::<DynamicImage>));
-    
-    // NUEVA VARIABLE: Controla el Switch entre cámara y archivo
-    let modo_fuente = Arc::new(Mutex::new(String::new())); // Vacío = Cámara
+    let modo_fuente = Arc::new(Mutex::new(String::new())); 
 
-    // ==================================================
-    // LÓGICA 1: BOTÓN VOLVER A LA CÁMARA
-    // ==================================================
-    // Clonamos ANTES de entrar al botón
+    // --- LÓGICA: Volver a la Cámara ---
     let modo_fuente_cam_btn = modo_fuente.clone();
-    
     ui.on_usar_camara(move || {
         println!("[UI] Volviendo a la cámara en vivo...");
-        *modo_fuente_cam_btn.lock().unwrap() = String::new(); // Vaciamos la ruta
+        *modo_fuente_cam_btn.lock().unwrap() = String::new(); 
     });
 
-    // ==================================================
-    // LÓGICA 2: BOTÓN CAMBIAR FUENTE (RFD)
-    // ==================================================
+    // --- LÓGICA: Cambiar Fuente (Archivos) ---
     let ui_handle_fuente = ui.as_weak();
     let ultimo_frame_rfd = ultimo_frame.clone();
     let modo_fuente_rfd = modo_fuente.clone();
@@ -93,27 +81,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 let ruta_completa = path.display().to_string();
                 let nombre_archivo = path.file_name().unwrap().to_string_lossy().to_string();
                 
-                println!("[UI] Cargando imagen estática: {}", ruta_completa);
-                
-                // 1. Apagamos visualmente la cámara guardando la ruta del archivo
                 *modo_bg.lock().unwrap() = ruta_completa.clone();
 
-                // 2. Cargamos la imagen desde el disco
                 if let Ok(img) = image::open(&path) {
                     *ultimo_frame_bg.lock().unwrap() = Some(img.clone());
-
                     let rgba = img.into_rgba8();
                     let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
                         rgba.as_raw(), rgba.width(), rgba.height()
                     );
-
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak.upgrade() {
-                            let slint_img = Image::from_rgba8(buffer);
-                            ui.set_frame_camara(slint_img);
+                            ui.set_frame_camara(Image::from_rgba8(buffer));
                             ui.set_fuente_actual(format!("Archivo: {}", nombre_archivo).into());
-                            
-                            // Forzamos la validación automática
                             ui.invoke_validar_manual();
                         }
                     });
@@ -122,28 +101,62 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
-    // Forzar actualización inicial
     ui.invoke_mina_seleccionada(db["minas"][0]["nombre_mina"].as_str().unwrap().into());
-    // --- HILO DE VIDEO EN VIVO ---
+
+    // ==============================================================
+    // --- ESTADO COMPARTIDO PARA LA TERCERA VÍA (IA VS CÁMARA) ---
+    // ==============================================================
+    // Aquí guardaremos: (Las cajas detectadas, Si el sistema es seguro, El mensaje del tutor)
+    // Usamos Vec::<common::BoundingBox>::new() para decirle el tipo exacto
+    let estado_inferencia = Arc::new(Mutex::new((Vec::<common::BoundingBox>::new(), true, String::new())));
+
+    // ==============================================================
+    // --- HILO 1: CÁMARA EXPRESS (Dibuja a 30 FPS sin bloqueos) ---
+    // ==============================================================
     let ui_handle_video = ui.as_weak();
-    let ultimo_frame_cam = ultimo_frame.clone();
+    let frame_para_inferencia = ultimo_frame.clone();
     let modo_fuente_cam = modo_fuente.clone();
+    let estado_dibujo = estado_inferencia.clone();
 
     thread::spawn(move || {
         if let Ok(mut cam) = CameraStream::new(0) {
             loop {
-                // Solo leemos de la cámara si no hay un archivo seleccionado
                 let es_camara = modo_fuente_cam.lock().unwrap().is_empty();
                 
                 if es_camara {
                     if let Ok(img) = cam.get_frame() {
-                        if let Ok(mut buz) = ultimo_frame_cam.lock() {
-                            *buz = Some(img.clone());
+                        // 1. Dejamos una copia fresquita en el buzón para que YOLO la tome cuando quiera
+                        if let Ok(mut buz) = frame_para_inferencia.lock() { 
+                            *buz = Some(img.clone()); 
                         }
 
-                        let rgba = img.into_rgba8();
+                        let mut img_rgba = img.to_rgba8();
+
+                        // 2. Leemos la última orden de YOLO (Instantáneo, no bloquea la cámara)
+                        let (ultimas_detecciones, sistema_seguro, _) = estado_dibujo.lock().unwrap().clone();
+
+                        // 3. DIBUJAMOS LAS CAJAS GRUESAS
+                        for det in &ultimas_detecciones {
+                            let color = if sistema_seguro { 
+                                Rgba([0, 255, 0, 255]) 
+                            } else { 
+                                Rgba([255, 0, 0, 255]) 
+                            };
+                            
+                            // TRUCO DE GROSOR: Dibujamos 4 rectángulos concéntricos
+                            for grosor in 0..4 {
+                                let rect = Rect::at(det.x1 as i32 - grosor, det.y1 as i32 - grosor)
+                                    .of_size(
+                                        (det.x2 - det.x1) as u32 + (grosor as u32 * 2), 
+                                        (det.y2 - det.y1) as u32 + (grosor as u32 * 2)
+                                    );
+                                draw_hollow_rect_mut(&mut img_rgba, rect, color);
+                            }
+                        }
+
+                        // 4. Enviamos a la interfaz visual
                         let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                            rgba.as_raw(), rgba.width(), rgba.height()
+                            img_rgba.as_raw(), img_rgba.width(), img_rgba.height()
                         );
 
                         let _ = slint::invoke_from_event_loop({
@@ -151,64 +164,138 @@ fn main() -> Result<(), slint::PlatformError> {
                             move || {
                                 if let Some(ui) = ui_weak.upgrade() {
                                     ui.set_frame_camara(Image::from_rgba8(buffer));
-                                    ui.set_fuente_actual("Cámara Web (En Vivo)".into());
+                                    ui.set_fuente_actual("Cámara Web (Auto-Validación)".into());
                                 }
                             }
                         });
                     }
                 }
-                thread::sleep(Duration::from_millis(33)); 
+                // Respiro vital de 16ms para no quemar la CPU si la cámara está apagada (modo archivo)
+                thread::sleep(Duration::from_millis(16)); 
             }
         }
     });
 
-    // --- BOTÓN VALIDAR ---
+    // ==============================================================
+    // --- HILO 2: EL CEREBRO IA (Piensa en silencio cada 1 segundo) ---
+    // ==============================================================
+    let engine_bg = engine.clone();
+    let evaluator_bg = evaluator.clone();
+    let frame_de_camara = ultimo_frame.clone();
+    let estado_yolo = estado_inferencia.clone();
+    let ui_handle_tutor = ui.as_weak();
+
+    thread::spawn(move || {
+        loop {
+            // YOLO saca la foto más reciente del buzón
+            let frame_actual = frame_de_camara.lock().unwrap().clone();
+            
+            if let Some(img) = frame_actual {
+                // Inferencia pesada (puede tardar lo que quiera, ya no laggea el video)
+                if let Ok(detecciones) = engine_bg.process_frame(&img) {
+                    
+                    let ev = evaluator_bg.lock().unwrap();
+                    let faltantes = ev.verificar_faltantes(&common::DetectionResult { 
+                        detecciones: detecciones.clone(),
+                        timestamp: 0 
+                    });
+
+                    let sistema_seguro = faltantes.is_empty();
+                    let mensaje_tutor = if sistema_seguro {
+                        "✅ Inspección superada. Equipamiento completo.".to_string()
+                    } else {
+                        format!("❌ ¡ALERTA! Faltan EPP obligatorios:\n{:?}", faltantes)
+                    };
+
+                    // Guardamos los resultados en el buzón para que la cámara los dibuje en el próximo frame
+                    if let Ok(mut estado) = estado_yolo.lock() {
+                        *estado = (detecciones, sistema_seguro, mensaje_tutor.clone());
+                    }
+
+                    // Actualizamos el panel de texto del Tutor en Slint
+                    let _ = slint::invoke_from_event_loop({
+                        let ui_weak = ui_handle_tutor.clone();
+                        move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_historial_tutor(Rc::new(VecModel::from(vec![mensaje_tutor.into()])).into());
+                            }
+                        }
+                    });
+                }
+            }
+            // El cerebro descansa 1 segundo completo antes de volver a mirar
+            thread::sleep(Duration::from_millis(1000));
+        }
+    });
+
+    // --- BOTÓN VALIDAR MANUAL (Dibuja sobre archivos estáticos) ---
     let engine_clone = engine.clone();
     let ultimo_frame_btn = ultimo_frame.clone();
     let evaluator_btn = evaluator.clone();
+    let ui_handle_validar = ui.as_weak(); // Para poder actualizar la UI desde aquí
 
     ui.on_validar_manual(move || {
-        println!("\n--- INICIANDO PRUEBA DE VISIÓN Y SEGURIDAD ---");
+        println!("\n--- INICIANDO PRUEBA MANUAL / IMAGEN ESTÁTICA ---");
         let frame_actual = ultimo_frame_btn.lock().unwrap().clone();
-
+        
         match frame_actual {
             Some(img) => {
                 match engine_clone.process_frame(&img) {
                     Ok(detecciones) => {
-                        println!("[1/2] YOLO finalizado. Detecciones: {}", detecciones.len());
-                        for det in &detecciones {
-                            println!("  -> {:?} (Confianza: {:.1}%)", det.label, det.score * 100.0);
+                        let ev = evaluator_btn.lock().unwrap();
+                        let faltantes = ev.verificar_faltantes(&common::DetectionResult { 
+                            detecciones: detecciones.clone(), 
+                            timestamp: 0 
+                        });
+                        
+                        let sistema_seguro = faltantes.is_empty();
+                        
+                        if sistema_seguro {
+                            println!("✅ Cumplimiento total.");
+                        } else {
+                            println!("❌ PELIGRO: Faltan EPP: {:?}", faltantes);
                         }
 
-                        // CRUZAMOS LOS DATOS DE VISIÓN CON LA BASE DE DATOS
-                        println!("[2/2] Evaluando cumplimiento EPP...");
-                        let ev = evaluator_btn.lock().unwrap();
-                        
-                        // Envolvemos las detecciones en la estructura que pide tu safety-engine
-                        let resultado_vision = common::DetectionResult { 
-                            detecciones,
-                            timestamp: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs(), // Genera un timestamp real en números
-                        };
-                        let faltantes = ev.verificar_faltantes(&resultado_vision);
-                        
-                        if faltantes.is_empty() {
-                            println!("  ✅ Cumplimiento total. El trabajador tiene todos los EPP.");
-                        } else {
-                            println!("  ❌ PELIGRO: Faltan EPP obligatorios:");
-                            for f in faltantes {
-                                println!("     - {:?}", f);
+                        // 1. DIBUJAMOS EN LA IMAGEN ESTÁTICA
+                        let mut img_rgba = img.to_rgba8();
+                        for det in &detecciones {
+                            let color = if sistema_seguro { 
+                                Rgba([0, 255, 0, 255]) 
+                            } else { 
+                                Rgba([255, 0, 0, 255]) 
+                            };
+                            
+                            for grosor in 0..4 {
+                                let rect = Rect::at(det.x1 as i32 - grosor, det.y1 as i32 - grosor)
+                                    .of_size(
+                                        (det.x2 - det.x1) as u32 + (grosor as u32 * 2), 
+                                        (det.y2 - det.y1) as u32 + (grosor as u32 * 2)
+                                    );
+                                draw_hollow_rect_mut(&mut img_rgba, rect, color);
                             }
                         }
+
+                        // 2. ACTUALIZAMOS LA UI (Imagen y Tutor)
+                        if let Some(ui) = ui_handle_validar.upgrade() {
+                            let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                                img_rgba.as_raw(), img_rgba.width(), img_rgba.height()
+                            );
+                            ui.set_frame_camara(Image::from_rgba8(buffer));
+
+                            let mensaje_tutor = if sistema_seguro {
+                                "✅ Inspección superada. Equipamiento completo.".to_string()
+                            } else {
+                                format!("❌ ¡ALERTA! Faltan EPP obligatorios:\n{:?}", faltantes)
+                            };
+                            ui.set_historial_tutor(Rc::new(VecModel::from(vec![mensaje_tutor.into()])).into());
+                        }
                     }
-                    Err(e) => println!("Error procesando frame en YOLO: {}", e),
+                    Err(e) => println!("Error YOLO: {}", e),
                 }
             }
-            None => println!("Aún no hay imagen cargada."),
+            None => println!("Aún no hay imagen."),
         }
-        println!("----------------------------------------------\n");
+        println!("-------------------------------------------------\n");
     });
 
     ui.run()
