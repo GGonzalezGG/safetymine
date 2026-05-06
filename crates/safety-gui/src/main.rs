@@ -1,10 +1,10 @@
-use slint::{Model, VecModel, SharedString, Image, Rgba8Pixel, SharedPixelBuffer};
+use slint::{ VecModel, SharedString, Image, Rgba8Pixel, SharedPixelBuffer};
 use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use std::thread;
-use std::time::{Duration, Instant}; // <--- Agregamos Instant
+use std::time::{Duration}; 
 use image::DynamicImage;
-use image::Rgba; // <--- Para el color de las cajas
+use image::Rgba; 
 
 // Importaciones de dibujo
 use imageproc::drawing::draw_hollow_rect_mut;
@@ -12,6 +12,10 @@ use imageproc::rect::Rect;
 
 use vision::{VisionEngine, CameraStream};
 use safety_engine::SafetyEvaluator;
+
+// IA Local
+use std::sync::atomic::{AtomicBool, Ordering};
+use ai_brain::TutorBrain;
 
 slint::include_modules!();
 
@@ -49,9 +53,24 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    //Modelo ONNX de Yolo para detectar el equipamiento de seguridad
     println!("[Sistema] Cargando modelo ONNX...");
     let engine = Arc::new(VisionEngine::new("best.onnx").expect("Fallo al cargar YOLO"));
     
+    // --- LLM Local ---
+    println!("[Sistema] Despertando al Safety Buddy (LLM)...");
+    
+    let brain = Arc::new(Mutex::new(TutorBrain::new("assets/models/gemma-4-E2B-it-Q4_K_M.gguf").expect("Fallo al cargar LLM")));
+    
+    // Memoria para no repetirle lo mismo al LLM
+    let ultimos_faltantes = Arc::new(Mutex::new(None::<Vec<common::EppItem>>));
+    
+    // Seguro para no lanzar 2 inferencias al mismo tiempo y quemar la CPU
+    let llm_ocupado = Arc::new(AtomicBool::new(false)); 
+
+    let historial_mensajes = Arc::new(Mutex::new(Vec::<slint::SharedString>::new()));
+    // ---------------------------
+
     let ultimo_frame = Arc::new(Mutex::new(None::<DynamicImage>));
     let modo_fuente = Arc::new(Mutex::new(String::new())); 
 
@@ -177,53 +196,100 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     // ==============================================================
-    // --- HILO 2: EL CEREBRO IA (Piensa en silencio cada 1 segundo) ---
+    // --- HILO 2: EL CEREBRO IA (YOLO + LLM) ---
     // ==============================================================
     let engine_bg = engine.clone();
     let evaluator_bg = evaluator.clone();
     let frame_de_camara = ultimo_frame.clone();
     let estado_yolo = estado_inferencia.clone();
     let ui_handle_tutor = ui.as_weak();
+    
+    // Clones para el LLM
+    let brain_bg = brain.clone();
+    let memoria_faltantes = ultimos_faltantes.clone();
+    let flag_ocupado = llm_ocupado.clone();
 
     thread::spawn(move || {
         loop {
-            // YOLO saca la foto más reciente del buzón
             let frame_actual = frame_de_camara.lock().unwrap().clone();
             
             if let Some(img) = frame_actual {
-                // Inferencia pesada (puede tardar lo que quiera, ya no laggea el video)
                 if let Ok(detecciones) = engine_bg.process_frame(&img) {
                     
-                    let ev = evaluator_bg.lock().unwrap();
-                    let faltantes = ev.verificar_faltantes(&common::DetectionResult { 
+                    let ev_lock = evaluator_bg.lock().unwrap();
+                    let faltantes = ev_lock.verificar_faltantes(&common::DetectionResult { 
                         detecciones: detecciones.clone(),
                         timestamp: 0 
                     });
 
                     let sistema_seguro = faltantes.is_empty();
-                    let mensaje_tutor = if sistema_seguro {
-                        "✅ Inspección superada. Equipamiento completo.".to_string()
-                    } else {
-                        format!("❌ ¡ALERTA! Faltan EPP obligatorios:\n{:?}", faltantes)
-                    };
 
-                    // Guardamos los resultados en el buzón para que la cámara los dibuje en el próximo frame
+                    // Guardamos resultados de visión para que la cámara dibuje cajas
                     if let Ok(mut estado) = estado_yolo.lock() {
-                        *estado = (detecciones, sistema_seguro, mensaje_tutor.clone());
+                        *estado = (detecciones, sistema_seguro, String::new());
                     }
 
-                    // Actualizamos el panel de texto del Tutor en Slint
-                    let _ = slint::invoke_from_event_loop({
-                        let ui_weak = ui_handle_tutor.clone();
-                        move || {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_historial_tutor(Rc::new(VecModel::from(vec![mensaje_tutor.into()])).into());
-                            }
+                    // --- LÓGICA DE GATILLO LLM (DEBOUNCE) ---
+                    let mut ha_cambiado = false;
+                    if let Ok(mut ultimos) = memoria_faltantes.lock() {
+                        // Solo disparamos si la lista de EPP faltantes es diferente a la última vez
+                        if ultimos.as_ref() != Some(&faltantes) {
+                            ha_cambiado = true;
+                            *ultimos = Some(faltantes.clone()); // Actualizamos la memoria
                         }
-                    });
+                    }
+
+                    // Si hubo un cambio y el LLM no está ocupado pensando otra respuesta...
+                    if ha_cambiado && !flag_ocupado.load(Ordering::SeqCst) {
+                        flag_ocupado.store(true, Ordering::SeqCst); // Bloqueamos la puerta
+
+                        // Extraemos los datos necesarios para el prompt
+                        let contexto_actual = ev_lock.contexto_actual.clone().unwrap();
+                        let protocolo_texto = ev_lock.obtener_texto_protocolo();
+                        let faltantes_llm = faltantes.clone();
+                        
+                        let brain_llm = brain_bg.clone();
+                        let flag_llm = flag_ocupado.clone();
+                        let ui_llm = ui_handle_tutor.clone();
+
+                        // Lanzamos al LLM en un sub-hilo para que YOLO siga analizando cajas a 1 FPS
+                        thread::spawn(move || {
+                            // 1. Avisamos en pantalla que la IA está escribiendo
+                            let _ = slint::invoke_from_event_loop({
+                                let ui_weak = ui_llm.clone();
+                                move || {
+                                    if let Some(ui) = ui_weak.upgrade() {
+                                        ui.set_historial_tutor(Rc::new(VecModel::from(vec!["🤖 Safety Buddy está analizando la situación...".into()])).into());
+                                    }
+                                }
+                            });
+
+                            // 2. Ejecutamos Llama 3
+                            if let Ok(brain_lock) = brain_llm.lock() {
+                                match brain_lock.evaluate_safety(&contexto_actual, &faltantes_llm, &protocolo_texto) {
+                                    Ok(respuesta_ia) => {
+                                        // 3. Enviamos la respuesta pedagógica a la Interfaz de Slint
+                                        let prefijo = if respuesta_ia.is_safe { "✅" } else { "❌" };
+                                        let mensaje_final = format!("{} [{}]\n{}", prefijo, respuesta_ia.severity, respuesta_ia.explanation);
+
+                                        let _ = slint::invoke_from_event_loop({
+                                            let ui_weak = ui_llm.clone();
+                                            move || {
+                                                if let Some(ui) = ui_weak.upgrade() {
+                                                    ui.set_historial_tutor(Rc::new(VecModel::from(vec![mensaje_final.into()])).into());
+                                                }
+                                            }
+                                        });
+                                    }
+                                    Err(e) => println!("[Error LLM] {}", e),
+                                }
+                            }
+                            // Liberamos la puerta para futuras inferencias
+                            flag_llm.store(false, Ordering::SeqCst); 
+                        });
+                    }
                 }
             }
-            // El cerebro descansa 1 segundo completo antes de volver a mirar
             thread::sleep(Duration::from_millis(1000));
         }
     });
@@ -233,6 +299,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let ultimo_frame_btn = ultimo_frame.clone();
     let evaluator_btn = evaluator.clone();
     let ui_handle_validar = ui.as_weak(); // Para poder actualizar la UI desde aquí
+
+    let brain_btn = brain.clone();
 
     ui.on_validar_manual(move || {
         println!("\n--- INICIANDO PRUEBA MANUAL / IMAGEN ESTÁTICA ---");
@@ -255,6 +323,9 @@ fn main() -> Result<(), slint::PlatformError> {
                         } else {
                             println!("❌ PELIGRO: Faltan EPP: {:?}", faltantes);
                         }
+
+                        let contexto_actual = ev.contexto_actual.clone().unwrap();
+                        let protocolo_texto = ev.obtener_texto_protocolo();
 
                         // 1. DIBUJAMOS EN LA IMAGEN ESTÁTICA
                         let mut img_rgba = img.to_rgba8();
@@ -281,14 +352,41 @@ fn main() -> Result<(), slint::PlatformError> {
                                 img_rgba.as_raw(), img_rgba.width(), img_rgba.height()
                             );
                             ui.set_frame_camara(Image::from_rgba8(buffer));
-
-                            let mensaje_tutor = if sistema_seguro {
-                                "✅ Inspección superada. Equipamiento completo.".to_string()
-                            } else {
-                                format!("❌ ¡ALERTA! Faltan EPP obligatorios:\n{:?}", faltantes)
-                            };
-                            ui.set_historial_tutor(Rc::new(VecModel::from(vec![mensaje_tutor.into()])).into());
                         }
+
+                        let brain_llm = brain_btn.clone();
+                        let ui_llm = ui_handle_validar.clone();
+                        let faltantes_llm = faltantes.clone();
+
+                        thread::spawn(move || {
+                            // A) Mostramos mensaje temporal de carga
+                            let _ = slint::invoke_from_event_loop({
+                                let ui_weak = ui_llm.clone();
+                                move || { 
+                                    if let Some(ui) = ui_weak.upgrade() { 
+                                        ui.set_historial_tutor(Rc::new(VecModel::from(vec!["🤖 Safety Buddy está analizando la imagen estática...".into()])).into()); 
+                                    } 
+                                }
+                            });
+
+                            // B) Ejecutamos Llama 3
+                            if let Ok(brain_lock) = brain_llm.lock() {
+                                if let Ok(respuesta_ia) = brain_lock.evaluate_safety(&contexto_actual, &faltantes_llm, &protocolo_texto) {
+                                    let prefijo = if respuesta_ia.is_safe { "✅" } else { "❌" };
+                                    let mensaje_final = format!("{} [{}]\n{}", prefijo, respuesta_ia.severity, respuesta_ia.explanation);
+
+                                    // C) Imprimimos la respuesta final en la consola de Slint
+                                    let _ = slint::invoke_from_event_loop({
+                                        let ui_weak = ui_llm.clone();
+                                        move || { 
+                                            if let Some(ui) = ui_weak.upgrade() { 
+                                                ui.set_historial_tutor(Rc::new(VecModel::from(vec![mensaje_final.into()])).into()); 
+                                            } 
+                                        }
+                                    });
+                                }
+                            }
+                        });
                     }
                     Err(e) => println!("Error YOLO: {}", e),
                 }

@@ -150,25 +150,37 @@ export component SafetyWindow inherits Window {
                 border-color: #333333;
                 border-width: 2px;
                 border-radius: 12px;
-                padding: 20px;
-                vertical-stretch: 1; // La consola crece para llenar el alto
+                vertical-stretch: 1;
 
                 VerticalBox {
+                    padding: 20px;
                     spacing: 16px;
                     Text { text: "SAFETY BUDDY (TUTOR)"; color: #00bcd4; font-weight: 800; font-size: 18px; }
                     
-                    ScrollView {
+                    historial_scroll := ScrollView {
+                        // LA MAGIA REAL: Restamos 15px para dejarle espacio físico a la barra de scroll
+                        viewport-width: self.width - 15px; 
+
                         VerticalBox {
+                            alignment: start;
                             spacing: 12px;
+                            
                             for msg in root.historial_tutor: Rectangle {
                                 background: #252525;
                                 border-radius: 8px;
-                                padding: 16px;
-                                Text {
-                                    text: msg;
-                                    color: #eeeeee;
-                                    wrap: word-wrap;
-                                    font-size: 15px;
+                                
+                                // ¡Importante! Aquí NO hay width: 100%. 
+                                // El VerticalBox padre ahora los estirará correctamente.
+
+                                VerticalBox {
+                                    padding: 16px; 
+                                    Text {
+                                        text: msg;
+                                        color: #eeeeee;
+                                        wrap: word-wrap;
+                                        // ¡Importante! Aquí tampoco hay width: 100%.
+                                        font-size: 15px;
+                                    }
                                 }
                             }
                         }

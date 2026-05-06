@@ -24,26 +24,43 @@ pub fn build_system_prompt() -> String {
 pub fn build_user_prompt(contexto: &MinaContext, faltantes: &[EppItem], protocolo_texto: &str) -> String {
     let riesgos_str = contexto.riesgos_activos.join(", ");
     
-    let faltantes_str = if faltantes.is_empty() {
-        "Ninguno. El operario lleva todo el equipo.".to_string()
-    } else {
-        faltantes.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", ")
-    };
-
-    format!(
-        "SITUACIÓN ACTUAL:
-        Ubicación: {}
-        Riesgos Activos: {}
-        EPP Faltante detectado por las cámaras: {}
-        
-        --- INICIO DEL PROTOCOLO DE LA MINA ---
-        {}
-        --- FIN DEL PROTOCOLO ---
-        
-        Genera el JSON evaluando la situación actual para el operario.",
-        contexto.nombre_mina,
-        riesgos_str,
-        faltantes_str,
-        protocolo_texto
-    )
+    // Si NO hay faltantes (Todo Seguro)
+    if faltantes.is_empty() {
+        format!(
+            "SITUACIÓN ACTUAL:
+            Ubicación: {}
+            Riesgos Activos: {}
+            INFORME DE CÁMARAS: ✅ CUMPLIMIENTO TOTAL. El operario tiene puestos TODOS los EPP correctamente.
+            
+            --- PROTOCOLO DE REFERENCIA ---
+            {}
+            
+            INSTRUCCIÓN CRÍTICA: La cámara confirma que el operario ESTÁ SEGURO y cumple las reglas. 
+            Tu única tarea es generar el JSON con 'severity': 'OK' y darle un breve y amigable mensaje de felicitaciones por protegerse. NO le pidas que se ponga ningún equipo, porque ya lo tiene puesto.",
+            contexto.nombre_mina,
+            riesgos_str,
+            protocolo_texto
+        )
+    } 
+    // Si SÍ hay faltantes (Peligro)
+    else {
+        let faltantes_str = faltantes.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", ");
+        format!(
+            "SITUACIÓN ACTUAL:
+            Ubicación: {}
+            Riesgos Activos: {}
+            INFORME DE CÁMARAS: ❌ PELIGRO DETECTADO. Al operario le falta: [{}]
+            
+            --- PROTOCOLO DE REFERENCIA ---
+            {}
+            
+            INSTRUCCIÓN CRÍTICA: El operario ESTÁ EN PELIGRO. 
+            Genera el JSON con 'severity': 'CRITICO' o 'ADVERTENCIA'. Usa la información del protocolo adjunto para explicarle pedagógicamente los riesgos de no usar [{}] en esta zona específica.",
+            contexto.nombre_mina,
+            riesgos_str,
+            faltantes_str,
+            protocolo_texto,
+            faltantes_str
+        )
+    }
 }
