@@ -1,0 +1,194 @@
+import { Button, ComboBox, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component SafetyWindow inherits Window {
+    title: "SafetyMine Checkpoint";
+    // Usamos preferred en lugar de valores fijos para que se adapte al maximizar
+    preferred-width: 1280px; 
+    preferred-height: 720px;
+    background: #121212;
+
+    in-out property <string> estado_general: "SISTEMA INICIADO";
+    in-out property <color> color_estado: #4CAF50;
+    in-out property <string> fuente_actual: "Cámara Web (0)";
+    in-out property <[string]> lista_epp: ["Casco", "Lentes", "Guantes"]; 
+    in-out property <[string]> riesgos_mina: ["Polvo en suspensión", "Gases Tóxicos"];
+    in-out property <[string]> historial_tutor: ["Esperando validación de usuario..."];
+    in-out property <[string]> lista_minas: ["Cargando..."];
+    in-out property <image> frame_camara;
+
+    callback cambiar_fuente();
+    callback validar_manual();
+    callback mina_seleccionada(string);
+    callback usar_camara();
+
+    HorizontalBox {
+        padding: 24px;
+        spacing: 24px;
+
+        // --- COLUMNA IZQUIERDA (Visor) ---
+        VerticalBox {
+            horizontal-stretch: 7; // Toma el 70% del ancho disponible
+            spacing: 16px;
+
+            Text {
+                text: "ESTADO: " + root.estado_general;
+                color: root.color_estado;
+                font-size: 32px;
+                font-weight: 800;
+                letter-spacing: 2px;
+            }
+
+            // El visor ahora es elástico verticalmente
+            Rectangle {
+                background: #000000;
+                border-color: #333333;
+                border-width: 2px;
+                border-radius: 12px;
+                vertical-stretch: 1; // Obliga al rectángulo a ocupar todo el espacio sobrante
+
+                // El visor ahora es elástico verticalmente
+            Rectangle {
+                background: #000000;
+                border-color: #333333;
+                border-width: 2px;
+                border-radius: 12px;
+                vertical-stretch: 1;
+                clip: true; // Para que el video no se salga de los bordes curvos
+
+                // Elemento que dibujará los fotogramas de Rust
+                Image {
+                    width: 100%;
+                    height: 100%;
+                    source: root.frame_camara;
+                    image-fit: contain;
+                }
+                
+                // Texto de fallback (se ocultará visualmente si hay imagen negra o se sobrepondrá)
+                if (root.fuente_actual == "") : Text {
+                    text: "[ VISOR DE CÁMARA DESACTIVADO ]";
+                    color: #555555;
+                    font-size: 18px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            }
+
+            // Barra de controles rediseñada
+            Rectangle {
+                background: #1e1e1e;
+                border-radius: 8px;
+                padding: 12px;
+                
+                HorizontalBox {
+                    spacing: 16px;
+                    alignment: space-between;
+
+                    ComboBox {
+                        width: 250px;
+                        model: root.lista_minas;
+                        selected(val) => { root.mina_seleccionada(val); }
+                    }
+
+                    HorizontalBox {
+                        spacing: 12px;
+                        Button {
+                            text: "Cámara 📷";
+                            clicked => { root.usar_camara(); }
+                        }
+                        Button {
+                            text: "Archivo 📁";
+                            clicked => { root.cambiar_fuente(); }
+                        }
+                        Button {
+                            text: "Validar ⚡";
+                            primary: true;
+                            clicked => { root.validar_manual(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- COLUMNA DERECHA (Tutor) ---
+        VerticalBox {
+            horizontal-stretch: 3; // Toma el 30% del ancho disponible
+            spacing: 20px;
+
+            Rectangle {
+                background: #1e1e1e;
+                border-radius: 12px;
+                padding: 20px;
+                VerticalBox {
+                    spacing: 12px;
+                    Text { text: "RIESGOS ACTIVOS"; color: #ffffff; font-weight: 700; font-size: 18px; }
+                    for riesgo in root.riesgos_mina: Text {
+                        text: "⚠️ " + riesgo;
+                        color: #ff9800;
+                        font-size: 16px;
+                    }
+                }
+            }
+
+            Rectangle {
+                background: #1e1e1e;
+                border-radius: 12px;
+                VerticalBox {
+                    padding: 20px;
+                    spacing: 12px;
+                    Text { text: "CHECKLIST EPP OBLIGATORIO"; color: #ffffff; font-weight: 700; font-size: 18px; }
+                    
+                    // ACÁ ESTÁ EL CAMBIO: Viñetas neutras en vez de tickets verdes
+                    for item in root.lista_epp: Text {
+                        text: "• " + item;
+                        color: #b0b0b0; // Gris neutro claro
+                        font-size: 16px;
+                    }
+                }
+            }
+
+            Rectangle {
+                background: #1a1a1a;
+                border-color: #333333;
+                border-width: 2px;
+                border-radius: 12px;
+                vertical-stretch: 1;
+
+                VerticalBox {
+                    padding: 20px;
+                    spacing: 16px;
+                    Text { text: "SAFETY BUDDY (TUTOR)"; color: #00bcd4; font-weight: 800; font-size: 18px; }
+                    
+                    historial_scroll := ScrollView {
+                        // LA MAGIA REAL: Restamos 15px para dejarle espacio físico a la barra de scroll
+                        viewport-width: self.width - 15px; 
+
+                        VerticalBox {
+                            alignment: start;
+                            spacing: 12px;
+                            
+                            for msg in root.historial_tutor: Rectangle {
+                                background: #252525;
+                                border-radius: 8px;
+                                
+                                // ¡Importante! Aquí NO hay width: 100%. 
+                                // El VerticalBox padre ahora los estirará correctamente.
+
+                                VerticalBox {
+                                    padding: 16px; 
+                                    Text {
+                                        text: msg;
+                                        color: #eeeeee;
+                                        wrap: word-wrap;
+                                        // ¡Importante! Aquí tampoco hay width: 100%.
+                                        font-size: 15px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

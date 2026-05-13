@@ -33,6 +33,7 @@ pub struct DetectionResult {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MinaContext {
+    pub id: String,
     pub nombre_mina: String,
     pub riesgos_activos: Vec<String>, // Ej: ["Gases", "Derrumbes"]
     pub epp_obligatorio: Vec<EppItem>,
