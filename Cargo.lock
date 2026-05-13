@@ -4818,6 +4818,7 @@ dependencies = [
 name = "safety-gui"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "ai-brain",
  "common",
  "image",

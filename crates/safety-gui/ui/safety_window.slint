@@ -133,13 +133,15 @@ export component SafetyWindow inherits Window {
             Rectangle {
                 background: #1e1e1e;
                 border-radius: 12px;
-                padding: 20px;
                 VerticalBox {
+                    padding: 20px;
                     spacing: 12px;
-                    Text { text: "CHECKLIST EPP"; color: #ffffff; font-weight: 700; font-size: 18px; }
+                    Text { text: "CHECKLIST EPP OBLIGATORIO"; color: #ffffff; font-weight: 700; font-size: 18px; }
+                    
+                    // ACÁ ESTÁ EL CAMBIO: Viñetas neutras en vez de tickets verdes
                     for item in root.lista_epp: Text {
-                        text: "✅ " + item;
-                        color: #4CAF50;
+                        text: "• " + item;
+                        color: #b0b0b0; // Gris neutro claro
                         font-size: 16px;
                     }
                 }

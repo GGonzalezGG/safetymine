@@ -7,8 +7,9 @@ use image::DynamicImage;
 use image::Rgba; 
 
 // Importaciones de dibujo
-use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
+use ab_glyph::{FontRef, PxScale};
+use imageproc::drawing::{draw_hollow_rect_mut, draw_text_mut};
 
 use vision::{VisionEngine, CameraStream};
 use safety_engine::SafetyEvaluator;
@@ -22,6 +23,15 @@ slint::include_modules!();
 fn main() -> Result<(), slint::PlatformError> {
     println!("Iniciando SafetyMine GUI...");
     
+    // CARGAMOS LA FUENTE PARA LOS TAGS
+    // CARGAMOS LA FUENTE PARA LOS TAGS (Leaking intencional para uso global)
+    let font_bytes: &'static [u8] = Box::leak(
+        std::fs::read("data/Roboto-Bold.ttf")
+            .expect("Por favor coloca un archivo font.ttf en la carpeta data/")
+            .into_boxed_slice()
+    );
+    let font = FontRef::try_from_slice(font_bytes).unwrap();
+
     let db_path = "data/db.json"; 
     let db_content = std::fs::read_to_string(db_path).expect("No se pudo cargar db.json");
     let db: serde_json::Value = serde_json::from_str(&db_content).expect("Error en JSON");
@@ -127,7 +137,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // ==============================================================
     // Aquí guardaremos: (Las cajas detectadas, Si el sistema es seguro, El mensaje del tutor)
     // Usamos Vec::<common::BoundingBox>::new() para decirle el tipo exacto
-    let estado_inferencia = Arc::new(Mutex::new((Vec::<common::BoundingBox>::new(), true, String::new())));
+    // Ahora guardamos: (Detecciones, Lista de EPP Requeridos como textos, Mensaje Tutor)
+    let estado_inferencia = Arc::new(Mutex::new((Vec::<common::BoundingBox>::new(), Vec::<String>::new(), String::new())));
 
     // ==============================================================
     // --- HILO 1: CÁMARA EXPRESS (Dibuja a 30 FPS sin bloqueos) ---
@@ -136,6 +147,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let frame_para_inferencia = ultimo_frame.clone();
     let modo_fuente_cam = modo_fuente.clone();
     let estado_dibujo = estado_inferencia.clone();
+
+    let font_camara = font.clone();
 
     thread::spawn(move || {
         if let Ok(mut cam) = CameraStream::new(0) {
@@ -151,26 +164,36 @@ fn main() -> Result<(), slint::PlatformError> {
 
                         let mut img_rgba = img.to_rgba8();
 
-                        // 2. Leemos la última orden de YOLO (Instantáneo, no bloquea la cámara)
-                        let (ultimas_detecciones, sistema_seguro, _) = estado_dibujo.lock().unwrap().clone();
+                        // 2. Leemos la última orden de YOLO
+                        let (ultimas_detecciones, epp_requeridos, _) = estado_dibujo.lock().unwrap().clone();
 
-                        // 3. DIBUJAMOS LAS CAJAS GRUESAS
+                        // 3. DIBUJAMOS CAJAS Y TAGS INDEPENDIENTES
                         for det in &ultimas_detecciones {
-                            let color = if sistema_seguro { 
-                                Rgba([0, 255, 0, 255]) 
-                            } else { 
-                                Rgba([255, 0, 0, 255]) 
+                            let label_str = format!("{:?}", det.label);
+                            
+                            // Lógica de colores por cada objeto
+                            let color = if label_str == "Persona" || label_str == "Person" {
+                                Rgba([0, 191, 255, 255]) // Celeste para la persona
+                            } else if epp_requeridos.contains(&label_str) {
+                                Rgba([0, 255, 0, 255]) // Verde solo si es un EPP válido y requerido
+                            } else {
+                                Rgba([255, 165, 0, 255]) // Naranja para objetos detectados pero no requeridos
                             };
                             
-                            // TRUCO DE GROSOR: Dibujamos 4 rectángulos concéntricos
+                            // Cajas gruesas
                             for grosor in 0..4 {
                                 let rect = Rect::at(det.x1 as i32 - grosor, det.y1 as i32 - grosor)
-                                    .of_size(
-                                        (det.x2 - det.x1) as u32 + (grosor as u32 * 2), 
-                                        (det.y2 - det.y1) as u32 + (grosor as u32 * 2)
-                                    );
+                                    .of_size((det.x2 - det.x1) as u32 + (grosor as u32 * 2), (det.y2 - det.y1) as u32 + (grosor as u32 * 2));
                                 draw_hollow_rect_mut(&mut img_rgba, rect, color);
                             }
+
+                            // Texto del Tag arriba de la caja
+                            draw_text_mut(
+                                &mut img_rgba, color, det.x1 as i32, (det.y1 as i32) - 20, 
+                                PxScale { x: 18.0, y: 18.0 },
+                                &font_camara, // <--- Usamos el clon local
+                                &label_str
+                            );
                         }
 
                         // 4. Enviamos a la interfaz visual
@@ -222,11 +245,16 @@ fn main() -> Result<(), slint::PlatformError> {
                         timestamp: 0 
                     });
 
-                    let sistema_seguro = faltantes.is_empty();
 
-                    // Guardamos resultados de visión para que la cámara dibuje cajas
+                    // Guardamos resultados para que la cámara los dibuje
                     if let Ok(mut estado) = estado_yolo.lock() {
-                        *estado = (detecciones, sistema_seguro, String::new());
+                        // Extraemos la lista de los requeridos como Strings ("Casco", "Mascarilla")
+                        let epp_requeridos_str: Vec<String> = ev_lock.contexto_actual.as_ref()
+                            .unwrap().epp_obligatorio.iter()
+                            .map(|e| format!("{:?}", e))
+                            .collect();
+                            
+                        *estado = (detecciones.clone(), epp_requeridos_str, String::new());
                     }
 
                     // --- LÓGICA DE GATILLO LLM (DEBOUNCE) ---
@@ -294,13 +322,14 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // --- BOTÓN VALIDAR MANUAL (Dibuja sobre archivos estáticos) ---
+   // --- BOTÓN VALIDAR MANUAL (Dibuja sobre archivos estáticos con Tags y Colores Dinámicos) ---
     let engine_clone = engine.clone();
     let ultimo_frame_btn = ultimo_frame.clone();
     let evaluator_btn = evaluator.clone();
     let ui_handle_validar = ui.as_weak(); // Para poder actualizar la UI desde aquí
 
     let brain_btn = brain.clone();
+    let font_validar = font.clone();
 
     ui.on_validar_manual(move || {
         println!("\n--- INICIANDO PRUEBA MANUAL / IMAGEN ESTÁTICA ---");
@@ -327,15 +356,26 @@ fn main() -> Result<(), slint::PlatformError> {
                         let contexto_actual = ev.contexto_actual.clone().unwrap();
                         let protocolo_texto = ev.obtener_texto_protocolo();
 
-                        // 1. DIBUJAMOS EN LA IMAGEN ESTÁTICA
+                        // Extraemos la lista de los EPP requeridos como Strings locales
+                        let epp_requeridos: Vec<String> = contexto_actual.epp_obligatorio.iter()
+                            .map(|e| format!("{:?}", e))
+                            .collect();
+
+                        // 1. DIBUJAMOS EN LA IMAGEN ESTÁTICA (Cajas y Tags)
                         let mut img_rgba = img.to_rgba8();
                         for det in &detecciones {
-                            let color = if sistema_seguro { 
-                                Rgba([0, 255, 0, 255]) 
-                            } else { 
-                                Rgba([255, 0, 0, 255]) 
+                            let label_str = format!("{:?}", det.label);
+                            
+                            // Lógica de colores dinámica por cada objeto
+                            let color = if label_str == "Persona" || label_str == "Person" {
+                                Rgba([0, 191, 255, 255]) // Celeste para la persona
+                            } else if epp_requeridos.contains(&label_str) {
+                                Rgba([0, 255, 0, 255]) // Verde solo si es requerido
+                            } else {
+                                Rgba([255, 165, 0, 255]) // Naranja para objetos detectados pero no requeridos
                             };
                             
+                            // Dibujamos las cajas gruesas
                             for grosor in 0..4 {
                                 let rect = Rect::at(det.x1 as i32 - grosor, det.y1 as i32 - grosor)
                                     .of_size(
@@ -344,6 +384,14 @@ fn main() -> Result<(), slint::PlatformError> {
                                     );
                                 draw_hollow_rect_mut(&mut img_rgba, rect, color);
                             }
+
+                            // Dibujamos el texto del Tag arriba de la caja
+                            draw_text_mut(
+                                &mut img_rgba, color, det.x1 as i32, (det.y1 as i32) - 20, 
+                                PxScale { x: 18.0, y: 18.0 },
+                                &font_validar, // <--- Usamos el clon local
+                                &label_str
+                            );
                         }
 
                         // 2. ACTUALIZAMOS LA UI (Imagen y Tutor)
