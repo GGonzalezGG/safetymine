@@ -78,7 +78,6 @@ fn main() -> Result<(), slint::PlatformError> {
     // Seguro para no lanzar 2 inferencias al mismo tiempo y quemar la CPU
     let llm_ocupado = Arc::new(AtomicBool::new(false)); 
 
-    let historial_mensajes = Arc::new(Mutex::new(Vec::<slint::SharedString>::new()));
     // ---------------------------
 
     let ultimo_frame = Arc::new(Mutex::new(None::<DynamicImage>));
